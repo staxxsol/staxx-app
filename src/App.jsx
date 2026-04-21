@@ -1343,22 +1343,65 @@ export default function App() {
   }
 
   // Withdraw: Transfer STAXX from treasury to user (needs backend signing)
-  function handleWithdraw() {
+  async function handleWithdraw() {
     const amt = parseFloat(withdrawAmt);
     if (!amt || amt <= 0 || amt > tokenReward - stakedBalance) {
       setWalletStatus("Invalid amount (max: " + (tokenReward - stakedBalance) + ")");
       setTimeout(() => setWalletStatus(""), 2000);
       return;
     }
-    if (!wallet?.connected) {
+    const provider = getPhantom();
+    if (!provider || !wallet?.connected) {
       setWalletStatus("Connect wallet first");
       setTimeout(() => setWalletStatus(""), 2000);
       return;
     }
-    // Option 1: Record the withdrawal request — treasury sends manually
-    setWalletStatus("📝 Withdrawal request submitted for " + amt + " $STAXX. You will receive tokens in your wallet shortly.");
-    setWithdrawAmt("");
-    setTimeout(() => setWalletStatus(""), 5000);
+    try {
+      setWalletStatus("🔐 Sign to withdraw " + amt + " $STAXX...");
+      const timestamp = new Date().toISOString();
+      const msg = "STAXX withdraw\n\nAmount: " + amt + " $STAXX\nWallet: " + wallet.publicKey + "\nTimestamp: " + timestamp;
+      const msgBytes = new TextEncoder().encode(msg);
+      const { signature } = await provider.signMessage(msgBytes, "utf8");
+      const sigArray = new Uint8Array(signature);
+      const chars = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+      let sigB58 = "";
+      let bytes = [...sigArray];
+      while (bytes.length) {
+        let carry = 0;
+        const newBytes = [];
+        for (const byte of bytes) {
+          carry = carry * 256 + byte;
+          if (newBytes.length || carry >= 58) {
+            newBytes.push(carry % 58);
+            carry = Math.floor(carry / 58);
+          }
+        }
+        sigB58 = chars[carry] + sigB58;
+        bytes = newBytes;
+      }
+      for (const byte of sigArray) {
+        if (byte === 0) sigB58 = "1" + sigB58;
+        else break;
+      }
+      setWalletStatus("⏳ Sending $STAXX to your wallet...");
+      const resp = await fetch("/api/claim", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ walletAddress: wallet.publicKey, amount: amt, signature: sigB58, message: msg }),
+      });
+      const result = await resp.json();
+      if (result.success) {
+        setWalletStatus("✅ Sent " + amt + " $STAXX! TX: " + result.signature.slice(0, 12) + "...");
+        setWithdrawAmt("");
+        setTimeout(() => { fetchWalletBalance(wallet.publicKey); setWalletStatus(""); }, 5000);
+      } else {
+        setWalletStatus("❌ " + (result.error || "Withdraw failed"));
+        setTimeout(() => setWalletStatus(""), 4000);
+      }
+    } catch (err) {
+      setWalletStatus(err.code === 4001 ? "Cancelled" : "Failed: " + (err.message || "Unknown error"));
+      setTimeout(() => setWalletStatus(""), 4000);
+    }
   }
 
   function handleDeposit() {
@@ -1759,19 +1802,51 @@ export default function App() {
         setStakeRewards(0);
         setWalletStatus("✅ Compounded successfully!");
       } else {
-        setWalletStatus("🔐 Sign to claim rewards...");
         const claimAmount = Math.floor(stakeRewards);
         if (claimAmount <= 0) return;
-        const msg = new TextEncoder().encode(
-          `STAXX Claim Rewards\n\nAmount: ${claimAmount} $STAXX\nWallet: ${wallet.publicKey}\nTimestamp: ${new Date().toISOString()}`
-        );
-        await provider.signMessage(msg, "utf8");
-        setTokenReward(prev => prev + claimAmount);
-        setTotalStakeEarned(prev => prev + stakeRewards);
-        setStakeRewards(0);
-        setWalletStatus("✅ Claimed " + claimAmount + " $STAXX to your in-app balance!");
+        setWalletStatus("🔐 Sign to claim " + claimAmount + " $STAXX...");
+        const timestamp = new Date().toISOString();
+        const msg = "STAXX claim_stake_rewards\n\nAmount: " + claimAmount + " $STAXX\nWallet: " + wallet.publicKey + "\nTimestamp: " + timestamp;
+        const msgBytes = new TextEncoder().encode(msg);
+        const { signature } = await provider.signMessage(msgBytes, "utf8");
+        const sigArray = new Uint8Array(signature);
+        const chars = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+        let sigB58 = "";
+        let bytes = [...sigArray];
+        while (bytes.length) {
+          let carry = 0;
+          const newBytes = [];
+          for (const byte of bytes) {
+            carry = carry * 256 + byte;
+            if (newBytes.length || carry >= 58) {
+              newBytes.push(carry % 58);
+              carry = Math.floor(carry / 58);
+            }
+          }
+          sigB58 = chars[carry] + sigB58;
+          bytes = newBytes;
+        }
+        for (const byte of sigArray) {
+          if (byte === 0) sigB58 = "1" + sigB58;
+          else break;
+        }
+        setWalletStatus("⏳ Sending $STAXX to your wallet...");
+        const resp = await fetch("/api/claim", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ walletAddress: wallet.publicKey, amount: claimAmount, signature: sigB58, message: msg }),
+        });
+        const result = await resp.json();
+        if (result.success) {
+          setTotalStakeEarned(prev => prev + stakeRewards);
+          setStakeRewards(0);
+          setWalletStatus("✅ Claimed " + claimAmount + " $STAXX! TX: " + result.signature.slice(0, 12) + "...");
+          setTimeout(() => { fetchWalletBalance(wallet.publicKey); }, 5000);
+        } else {
+          setWalletStatus("❌ " + (result.error || "Claim failed"));
+        }
       }
-      setTimeout(() => setWalletStatus(""), 3000);
+      setTimeout(() => setWalletStatus(""), 4000);
     } catch (err) {
       setWalletStatus(err.code === 4001 ? "Cancelled" : "Failed: " + (err.message || "Unknown error"));
       setTimeout(() => setWalletStatus(""), 3000);
