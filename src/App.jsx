@@ -1389,6 +1389,7 @@ export default function App() {
       });
       const result = await resp.json();
       if (result.success) {
+        setTokenReward(prev => prev - amt);
         setWalletStatus("✅ Sent " + amt + " $STAXX! TX: " + result.signature.slice(0, 12) + "...");
         setWithdrawAmt("");
         setTimeout(() => { fetchWalletBalance(wallet.publicKey); setWalletStatus(""); }, 5000);
