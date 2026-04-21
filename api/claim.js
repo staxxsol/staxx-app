@@ -1,5 +1,5 @@
 const { Connection, Keypair, PublicKey, Transaction } = require("@solana/web3.js");
-const { getAssociatedTokenAddress, createTransferInstruction, createAssociatedTokenAccountInstruction, getAccount } = require("@solana/spl-token");
+const { getAssociatedTokenAddress, createTransferInstruction, createAssociatedTokenAccountInstruction, getAccount, TOKEN_PROGRAM_ID } = require("@solana/spl-token");
 const bs58 = require("bs58");
 const nacl = require("tweetnacl");
 
@@ -59,27 +59,52 @@ module.exports = async function handler(req, res) {
     const rpc = process.env.SOLANA_RPC_URL || "https://api.mainnet-beta.solana.com";
     const conn = new Connection(rpc, "confirmed");
 
+    // Get ATAs
     const treasuryATA = await getAssociatedTokenAddress(STAXX_MINT, treasury.publicKey);
     const userATA = await getAssociatedTokenAddress(STAXX_MINT, userPubKey);
 
-    const acct = await getAccount(conn, treasuryATA);
+    // Check treasury balance
+    let treasuryAccount;
+    try {
+      treasuryAccount = await getAccount(conn, treasuryATA);
+    } catch (e) {
+      return res.status(400).json({ error: "Treasury has no STAXX token account. Send STAXX to: " + treasury.publicKey.toBase58() });
+    }
+
+    // Get decimals
     const mintInfo = await conn.getParsedAccountInfo(STAXX_MINT);
     const decimals = mintInfo.value?.data?.parsed?.info?.decimals || 6;
     const raw = Math.floor(amt * Math.pow(10, decimals));
 
-    if (Number(acct.amount) < raw) {
+    if (Number(treasuryAccount.amount) < raw) {
       return res.status(400).json({ error: "Treasury low on funds" });
     }
 
+    // Build transaction
     const tx = new Transaction();
 
+    // Check if user has a token account, create if not
+    let userHasATA = false;
     try {
       await getAccount(conn, userATA);
+      userHasATA = true;
     } catch (e) {
-      tx.add(createAssociatedTokenAccountInstruction(treasury.publicKey, userATA, userPubKey, STAXX_MINT));
+      // User doesn't have a STAXX token account — create it
+      tx.add(createAssociatedTokenAccountInstruction(
+        treasury.publicKey,
+        userATA,
+        userPubKey,
+        STAXX_MINT
+      ));
     }
 
-    tx.add(createTransferInstruction(treasuryATA, userATA, treasury.publicKey, raw));
+    // Add transfer
+    tx.add(createTransferInstruction(
+      treasuryATA,
+      userATA,
+      treasury.publicKey,
+      raw
+    ));
 
     const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash("confirmed");
     tx.recentBlockhash = blockhash;
