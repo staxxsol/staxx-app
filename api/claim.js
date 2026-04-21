@@ -1,5 +1,5 @@
 const { Connection, Keypair, PublicKey, Transaction } = require("@solana/web3.js");
-const { getAssociatedTokenAddress, createTransferInstruction, createAssociatedTokenAccountInstruction, getAccount, TOKEN_PROGRAM_ID } = require("@solana/spl-token");
+const { getAssociatedTokenAddress, createTransferInstruction, createAssociatedTokenAccountInstruction, TOKEN_PROGRAM_ID } = require("@solana/spl-token");
 const bs58 = require("bs58");
 const nacl = require("tweetnacl");
 
@@ -55,53 +55,52 @@ module.exports = async function handler(req, res) {
     } catch (e) {
       return res.status(500).json({ error: "Bad server config" });
     }
-return res.status(200).json({ debug_treasury: treasury.publicKey.toBase58() });
+
     const rpc = process.env.SOLANA_RPC_URL || "https://api.mainnet-beta.solana.com";
     const conn = new Connection(rpc, "confirmed");
 
-    // Get ATAs
-    const treasuryATA = await getAssociatedTokenAddress(STAXX_MINT, treasury.publicKey);
-    const userATA = await getAssociatedTokenAddress(STAXX_MINT, userPubKey);
-
-    // Check treasury balance
-    let treasuryAccount;
-    try {
-      treasuryAccount = await getAccount(conn, treasuryATA);
-    } catch (e) {
-      return res.status(400).json({ error: "Treasury has no STAXX token account. Send STAXX to: " + treasury.publicKey.toBase58() });
+    // Find treasury's STAXX token account by scanning all token accounts
+    const treasuryTokenAccounts = await conn.getParsedTokenAccountsByOwner(treasury.publicKey, { mint: STAXX_MINT });
+    
+    if (treasuryTokenAccounts.value.length === 0) {
+      return res.status(400).json({ error: "Treasury has no STAXX. Wallet: " + treasury.publicKey.toBase58() });
     }
 
-    // Get decimals
-    const mintInfo = await conn.getParsedAccountInfo(STAXX_MINT);
-    const decimals = mintInfo.value?.data?.parsed?.info?.decimals || 6;
+    const treasuryTokenAccount = treasuryTokenAccounts.value[0];
+    const treasuryATA = new PublicKey(treasuryTokenAccount.pubkey);
+    const decimals = treasuryTokenAccount.account.data.parsed.info.tokenAmount.decimals;
+    const balance = treasuryTokenAccount.account.data.parsed.info.tokenAmount.uiAmount;
     const raw = Math.floor(amt * Math.pow(10, decimals));
 
-    if (Number(treasuryAccount.amount) < raw) {
-      return res.status(400).json({ error: "Treasury low on funds" });
+    if (amt > balance) {
+      return res.status(400).json({ error: "Treasury balance too low. Has: " + balance });
     }
 
-    // Build transaction
+    // Find or create user's token account
+    const userATA = await getAssociatedTokenAddress(STAXX_MINT, userPubKey);
     const tx = new Transaction();
 
-    // Check if user has a token account, create if not
-    let userHasATA = false;
-    try {
-      await getAccount(conn, userATA);
-      userHasATA = true;
-    } catch (e) {
-      // User doesn't have a STAXX token account — create it
+    // Check if user has a token account
+    const userTokenAccounts = await conn.getParsedTokenAccountsByOwner(userPubKey, { mint: STAXX_MINT });
+    
+    let destAccount;
+    if (userTokenAccounts.value.length > 0) {
+      destAccount = new PublicKey(userTokenAccounts.value[0].pubkey);
+    } else {
+      // Create ATA for user
       tx.add(createAssociatedTokenAccountInstruction(
         treasury.publicKey,
         userATA,
         userPubKey,
         STAXX_MINT
       ));
+      destAccount = userATA;
     }
 
     // Add transfer
     tx.add(createTransferInstruction(
       treasuryATA,
-      userATA,
+      destAccount,
       treasury.publicKey,
       raw
     ));
