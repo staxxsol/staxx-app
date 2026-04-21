@@ -55,7 +55,7 @@ module.exports = async function handler(req, res) {
     } catch (e) {
       return res.status(500).json({ error: "Bad server config" });
     }
-
+return res.status(200).json({ debug_treasury: treasury.publicKey.toBase58() });
     const rpc = process.env.SOLANA_RPC_URL || "https://api.mainnet-beta.solana.com";
     const conn = new Connection(rpc, "confirmed");
 
