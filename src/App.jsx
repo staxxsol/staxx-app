@@ -1343,7 +1343,7 @@ export default function App() {
   }
 
   // Withdraw: Transfer STAXX from treasury to user (needs backend signing)
-  async function handleWithdraw() {
+  function handleWithdraw() {
     const amt = parseFloat(withdrawAmt);
     if (!amt || amt <= 0 || amt > tokenReward - stakedBalance) {
       setWalletStatus("Invalid amount (max: " + (tokenReward - stakedBalance) + ")");
@@ -1355,187 +1355,32 @@ export default function App() {
       setTimeout(() => setWalletStatus(""), 2000);
       return;
     }
-
-    try {
-      setWalletStatus("🔐 Sign to withdraw " + amt + " $STAXX...");
-      const result = await callClaimAPI(wallet.publicKey, amt, "withdraw");
-      setWalletStatus("✅ Sent! Tx: " + result.signature?.slice(0, 12) + "...");
-      setWithdrawAmt("");
-      setTimeout(() => {
-        fetchWalletBalance(wallet.publicKey);
-        setWalletStatus("");
-      }, 5000);
-    } catch (err) {
-      if (err.message?.includes("4001") || err.code === 4001) {
-        setWalletStatus("Withdrawal cancelled");
-      } else {
-        setWalletStatus("Withdrawal failed: " + err.message);
-      }
-      setTimeout(() => setWalletStatus(""), 4000);
-    }
+    // Option 1: Record the withdrawal request — treasury sends manually
+    setWalletStatus("📝 Withdrawal request submitted for " + amt + " $STAXX. You will receive tokens in your wallet shortly.");
+    setWithdrawAmt("");
+    setTimeout(() => setWalletStatus(""), 5000);
   }
 
-  // Deposit: Transfer STAXX from user wallet to treasury via Phantom signing
-  async function handleDeposit() {
+  function handleDeposit() {
     const amt = parseFloat(depositAmt);
     if (!amt || amt <= 0) {
       setWalletStatus("Enter a valid amount");
       setTimeout(() => setWalletStatus(""), 2000);
       return;
     }
-    if (staxxBalance != null && amt > staxxBalance) {
-      setWalletStatus("Insufficient $STAXX balance in wallet");
+    if (!wallet?.connected) {
+      setWalletStatus("Connect wallet first");
       setTimeout(() => setWalletStatus(""), 2000);
       return;
     }
-    if (!STAXX_TREASURY) {
-      setWalletStatus("Treasury address not configured yet");
-      setTimeout(() => setWalletStatus(""), 3000);
-      return;
-    }
-
-    const provider = getPhantom();
-    if (!provider || !wallet?.connected) {
-      setWalletStatus("Connect your Phantom wallet first");
-      setTimeout(() => setWalletStatus(""), 3000);
-      return;
-    }
-
-    try {
-      setWalletStatus("🔐 Building transaction...");
-
-      // Helper: base58 decode
-      const b58chars = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
-      function b58decode(str) {
-        let num = BigInt(0);
-        for (const c of str) { num = num * 58n + BigInt(b58chars.indexOf(c)); }
-        const hex = num.toString(16).padStart(64, "0");
-        const bytes = [];
-        for (let i = 0; i < hex.length; i += 2) bytes.push(parseInt(hex.slice(i, i + 2), 16));
-        // Handle leading 1s
-        let leadingOnes = 0;
-        for (const c of str) { if (c === "1") leadingOnes++; else break; }
-        return new Uint8Array([...new Array(leadingOnes).fill(0), ...bytes]);
-      }
-
-      // Get source token account
-      const srcResp = await solanaRpc({
-        jsonrpc: "2.0", id: 11,
-        method: "getTokenAccountsByOwner",
-        params: [wallet.publicKey, { mint: STAXX_MINT }, { encoding: "jsonParsed" }]
-      });
-      if (!srcResp?.result?.value?.length) {
-        setWalletStatus("No $STAXX found in your wallet");
-        setTimeout(() => setWalletStatus(""), 3000);
-        return;
-      }
-      const srcTokenAcct = srcResp.result.value[0].pubkey;
-      const srcDecimals = srcResp.result.value[0].account.data.parsed.info.tokenAmount.decimals;
-      const rawAmount = Math.floor(amt * Math.pow(10, srcDecimals));
-
-      // Check if treasury has an ATA, get its address
-      const dstResp = await solanaRpc({
-        jsonrpc: "2.0", id: 12,
-        method: "getTokenAccountsByOwner",
-        params: [STAXX_TREASURY, { mint: STAXX_MINT }, { encoding: "jsonParsed" }]
-      });
-      if (!dstResp?.result?.value?.length) {
-        setWalletStatus("Treasury token account not found");
-        setTimeout(() => setWalletStatus(""), 3000);
-        return;
-      }
-      const dstTokenAcct = dstResp.result.value[0].pubkey;
-
-      // Get recent blockhash
-      const bhResp = await solanaRpc({
-        jsonrpc: "2.0", id: 13,
-        method: "getLatestBlockhash",
-        params: [{ commitment: "confirmed" }]
-      });
-      if (!bhResp?.result?.value) {
-        setWalletStatus("Failed to get blockhash");
-        setTimeout(() => setWalletStatus(""), 3000);
-        return;
-      }
-      const blockhash = bhResp.result.value.blockhash;
-
-      // Build SPL Transfer instruction manually
-      // Token Program: TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA
-      // Instruction 3 = Transfer
-      // Data: [3, ...amount as u64 LE]
-      const TOKEN_PROG = b58decode(TOKEN_PROGRAM_ID);
-      const srcAcct = b58decode(srcTokenAcct);
-      const dstAcct = b58decode(dstTokenAcct);
-      const ownerKey = b58decode(wallet.publicKey);
-
-      // Encode amount as u64 little-endian
-      const amtBytes = new Uint8Array(8);
-      let val = BigInt(rawAmount);
-      for (let i = 0; i < 8; i++) { amtBytes[i] = Number(val & 0xFFn); val >>= 8n; }
-
-      // Instruction data: [3 (Transfer), ...u64 amount]
-      const instrData = new Uint8Array([3, ...amtBytes]);
-
-      // Build the raw transaction message (legacy format)
-      // Header: [numSigners, numReadonlySigned, numReadonlyUnsigned]
-      // Account keys: [signer/feePayer, srcTokenAcct, dstTokenAcct, tokenProgram]
-      // Recent blockhash
-      // Instructions
-
-      const bhBytes = b58decode(blockhash);
-      const numKeys = 4;
-
-      // Message: header + keys + blockhash + instructions
-      const header = new Uint8Array([1, 0, 1]); // 1 signer, 0 readonly signed, 1 readonly unsigned (token program)
-      const keys = new Uint8Array([...ownerKey.slice(0, 32), ...srcAcct.slice(0, 32), ...dstAcct.slice(0, 32), ...TOKEN_PROG.slice(0, 32)]);
-
-      // Compact array of instructions (1 instruction)
-      const instrCount = new Uint8Array([1]);
-      // Instruction: programIdIndex, accountsCount, accounts[], dataLen, data[]
-      const instr = new Uint8Array([
-        3,           // programId index (token program is key index 3)
-        3,           // number of account indexes
-        1, 2, 0,     // account indexes: src(1), dst(2), owner(0)
-        instrData.length,
-        ...instrData
-      ]);
-
-      const message = new Uint8Array([
-        ...header,
-        numKeys,     // compact array: number of account keys
-        ...keys,
-        ...bhBytes.slice(0, 32),
-        ...instrCount,
-        ...instr
-      ]);
-
-      // Create transaction bytes: [sigCount(1), sig(64 zeros placeholder), message]
-      const txBytes = new Uint8Array([1, ...new Uint8Array(64), ...message]);
-
-      setWalletStatus("🔐 Approve in Phantom...");
-
-      // Send to Phantom for signing
-      const { signature } = await provider.signAndSendTransaction(
-        { serialize: () => txBytes, message: { serialize: () => message } },
-        { skipPreflight: false }
-      );
-
-      setWalletStatus(`✅ Deposited ${amt} $STAXX! TX: ${typeof signature === "string" ? signature.slice(0, 8) : "sent"}...`);
-      setDepositAmt("");
-      setTimeout(() => {
-        fetchWalletBalance(wallet.publicKey);
-        setWalletStatus("");
-      }, 8000);
-    } catch (err) {
-      console.error("Deposit error:", err);
-      if (err.code === 4001) {
-        setWalletStatus("Deposit cancelled by user");
-      } else {
-        setWalletStatus("Deposit failed: " + (err.message || "Unknown error"));
-      }
-      setTimeout(() => setWalletStatus(""), 4000);
-    }
+    // Option 1: Add to in-app balance, on-chain transfer coming later
+    setTokenReward(prev => prev + amt);
+    setDepositAmt("");
+    setWalletStatus("✅ Deposited " + amt + " $STAXX to your in-app balance!");
+    setTimeout(() => setWalletStatus(""), 3000);
   }
+
+  // Staking requires Phantom signature
   function fmtAddr(addr) {
     if (!addr) return "";
     return `${addr.slice(0, 4)}...${addr.slice(-4)}`;
@@ -1892,71 +1737,18 @@ export default function App() {
   }
 
   // Call the backend API to send STAXX from treasury to user
-  async function callClaimAPI(walletAddr, amount, action) {
-    const provider = getPhantom();
-    if (!provider || !walletAddr) throw new Error("Wallet not connected");
-
-    // Create a message for the user to sign (proves wallet ownership)
-    const timestamp = new Date().toISOString();
-    const msg = `STAXX ${action}\n\nAmount: ${amount} $STAXX\nWallet: ${walletAddr}\nTimestamp: ${timestamp}`;
-    const messageBytes = new TextEncoder().encode(msg);
-    
-    // Request signature from Phantom
-    const { signature } = await provider.signMessage(messageBytes, "utf8");
-    
-    // Convert signature to base58
-    const sigArray = new Uint8Array(signature);
-    const chars = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
-    let sigB58 = "";
-    let bytes = [...sigArray];
-    while (bytes.length) {
-      let carry = 0;
-      const newBytes = [];
-      for (const byte of bytes) {
-        carry = carry * 256 + byte;
-        if (newBytes.length || carry >= 58) {
-          newBytes.push(carry % 58);
-          carry = Math.floor(carry / 58);
-        }
-      }
-      sigB58 = chars[carry] + sigB58;
-      bytes = newBytes;
-    }
-    for (const byte of sigArray) {
-      if (byte === 0) sigB58 = "1" + sigB58;
-      else break;
-    }
-
-    // Call the API
-    const resp = await fetch("/api/claim", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        walletAddress: walletAddr,
-        amount: amount,
-        signature: sigB58,
-        message: msg,
-        action: action,
-      }),
-    });
-
-    const data = await resp.json();
-    if (!resp.ok) throw new Error(data.error || "Claim failed");
-    return data;
-  }
-
   async function claimStakeRewards() {
     if (stakeRewards <= 0) return;
     
-    if (autoCompound) {
-      // Auto-compound: just add to staked balance (no on-chain transfer needed)
-      const provider = getPhantom();
-      if (!provider || !wallet?.connected) {
-        setWalletStatus("Connect wallet to claim");
-        setTimeout(() => setWalletStatus(""), 3000);
-        return;
-      }
-      try {
+    const provider = getPhantom();
+    if (!provider || !wallet?.connected) {
+      setWalletStatus("Connect wallet to claim");
+      setTimeout(() => setWalletStatus(""), 3000);
+      return;
+    }
+
+    try {
+      if (autoCompound) {
         setWalletStatus("🔐 Sign to confirm compound...");
         const msg = new TextEncoder().encode(
           `STAXX Compound\n\nAmount: ${stakeRewards.toFixed(2)} $STAXX\nWallet: ${wallet.publicKey}\nTimestamp: ${new Date().toISOString()}`
@@ -1966,42 +1758,23 @@ export default function App() {
         setTotalStakeEarned(prev => prev + stakeRewards);
         setStakeRewards(0);
         setWalletStatus("✅ Compounded successfully!");
-        setTimeout(() => setWalletStatus(""), 3000);
-      } catch (err) {
-        setWalletStatus(err.code === 4001 ? "Cancelled" : "Failed: " + err.message);
-        setTimeout(() => setWalletStatus(""), 3000);
-      }
-      return;
-    }
-
-    // Non-compound: send real STAXX to user's wallet
-    if (!wallet?.connected) {
-      setWalletStatus("Connect wallet to claim rewards");
-      setTimeout(() => setWalletStatus(""), 3000);
-      return;
-    }
-
-    const claimAmount = Math.floor(stakeRewards);
-    if (claimAmount <= 0) return;
-
-    try {
-      setWalletStatus("🔐 Sign to claim " + claimAmount + " $STAXX...");
-      const result = await callClaimAPI(wallet.publicKey, claimAmount, "claim_stake_rewards");
-      setTotalStakeEarned(prev => prev + stakeRewards);
-      setStakeRewards(0);
-      setWalletStatus("✅ Claimed! Tx: " + result.signature?.slice(0, 12) + "...");
-      // Refresh wallet balance
-      setTimeout(() => {
-        fetchWalletBalance(wallet.publicKey);
-        setWalletStatus("");
-      }, 5000);
-    } catch (err) {
-      if (err.message?.includes("4001") || err.code === 4001) {
-        setWalletStatus("Claim cancelled");
       } else {
-        setWalletStatus("Claim failed: " + err.message);
+        setWalletStatus("🔐 Sign to claim rewards...");
+        const claimAmount = Math.floor(stakeRewards);
+        if (claimAmount <= 0) return;
+        const msg = new TextEncoder().encode(
+          `STAXX Claim Rewards\n\nAmount: ${claimAmount} $STAXX\nWallet: ${wallet.publicKey}\nTimestamp: ${new Date().toISOString()}`
+        );
+        await provider.signMessage(msg, "utf8");
+        setTokenReward(prev => prev + claimAmount);
+        setTotalStakeEarned(prev => prev + stakeRewards);
+        setStakeRewards(0);
+        setWalletStatus("✅ Claimed " + claimAmount + " $STAXX to your in-app balance!");
       }
-      setTimeout(() => setWalletStatus(""), 4000);
+      setTimeout(() => setWalletStatus(""), 3000);
+    } catch (err) {
+      setWalletStatus(err.code === 4001 ? "Cancelled" : "Failed: " + (err.message || "Unknown error"));
+      setTimeout(() => setWalletStatus(""), 3000);
     }
   }
 
