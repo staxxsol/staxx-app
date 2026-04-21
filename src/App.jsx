@@ -3810,7 +3810,7 @@ export default function App() {
                   <div style={{background:C.card,borderRadius:12,padding:16,border:`1px solid ${C.border}`}}>
                     <div style={{fontSize:12,fontWeight:700,fontFamily:"'Outfit',sans-serif",marginBottom:6,color:C.accent}}>Withdraw $STAXX</div>
                     <div style={{fontSize:11,color:C.dim,lineHeight:1.5,marginBottom:10}}>Send your stacked $STAXX tokens to your connected Phantom wallet.</div>
-                    <div style={{fontSize:10,color:C.dim,marginBottom:4}}>Available: {tokenReward} $STAXX</div>
+                    <div style={{fontSize:10,color:C.dim,marginBottom:4}}>Available: {tokenReward - stakedBalance} $STAXX</div>
                     <input type="number" value={withdrawAmt} onChange={e=>setWithdrawAmt(e.target.value)} placeholder="0"
                       style={{width:"100%",padding:"8px 10px",background:C.bg,color:C.text,border:`1px solid ${C.border}`,borderRadius:7,fontSize:13,fontFamily:"'JetBrains Mono',monospace",outline:"none",marginBottom:6}}/>
                     <button onClick={handleWithdraw}
