@@ -1,12 +1,29 @@
-const { Connection, Keypair, PublicKey, Transaction } = require("@solana/web3.js");
-const { getAssociatedTokenAddress, createTransferInstruction, createAssociatedTokenAccountInstruction, TOKEN_PROGRAM_ID } = require("@solana/spl-token");
+const { Connection, Keypair, PublicKey, Transaction, TransactionInstruction } = require("@solana/web3.js");
+const { getAssociatedTokenAddress, createAssociatedTokenAccountInstruction } = require("@solana/spl-token");
 const bs58 = require("bs58");
 const nacl = require("tweetnacl");
 
 const STAXX_MINT = new PublicKey("HTj2djkjfweg21C2MutrXcawb9VuTqeazhQttWLrpump");
+const TOKEN_PROGRAM = new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
+const TOKEN_2022_PROGRAM = new PublicKey("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb");
 const MAX_CLAIM = 100000;
 const RATE_LIMIT_MS = 60000;
 const claimTimes = new Map();
+
+function createTokenTransferInstruction(source, dest, owner, amount, programId) {
+  const data = Buffer.alloc(9);
+  data.writeUInt8(3, 0);
+  data.writeBigUInt64LE(BigInt(amount), 1);
+  return new TransactionInstruction({
+    keys: [
+      { pubkey: source, isSigner: false, isWritable: true },
+      { pubkey: dest, isSigner: false, isWritable: true },
+      { pubkey: owner, isSigner: true, isWritable: false },
+    ],
+    programId,
+    data,
+  });
+}
 
 module.exports = async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -28,7 +45,7 @@ module.exports = async function handler(req, res) {
 
     const last = claimTimes.get(walletAddress);
     if (last && Date.now() - last < RATE_LIMIT_MS) {
-      return res.status(429).json({ error: "Too fast. Wait 60s between claims." });
+      return res.status(429).json({ error: "Too fast. Wait 60s." });
     }
 
     let userPubKey;
@@ -59,11 +76,16 @@ module.exports = async function handler(req, res) {
     const rpc = process.env.SOLANA_RPC_URL || "https://api.mainnet-beta.solana.com";
     const conn = new Connection(rpc, "confirmed");
 
-    // Find treasury's STAXX token account by scanning all token accounts
-    const treasuryTokenAccounts = await conn.getParsedTokenAccountsByOwner(treasury.publicKey, { mint: STAXX_MINT });
-    
+    // Find which token program the mint uses
+    const mintAccountInfo = await conn.getAccountInfo(STAXX_MINT);
+    const tokenProgramId = mintAccountInfo.owner;
+    const isToken2022 = tokenProgramId.equals(TOKEN_2022_PROGRAM);
+
+    // Find treasury token account
+    const treasuryTokenAccounts = await conn.getParsedTokenAccountsByOwner(treasury.publicKey, { mint: STAXX_MINT }, { commitment: "confirmed" });
+
     if (treasuryTokenAccounts.value.length === 0) {
-      return res.status(400).json({ error: "Treasury has no STAXX. Wallet: " + treasury.publicKey.toBase58() });
+      return res.status(400).json({ error: "Treasury has no STAXX" });
     }
 
     const treasuryTokenAccount = treasuryTokenAccounts.value[0];
@@ -76,33 +98,34 @@ module.exports = async function handler(req, res) {
       return res.status(400).json({ error: "Treasury balance too low. Has: " + balance });
     }
 
-    // Find or create user's token account
-    const userATA = await getAssociatedTokenAddress(STAXX_MINT, userPubKey);
-    const tx = new Transaction();
+    // Find user token account
+    const userTokenAccounts = await conn.getParsedTokenAccountsByOwner(userPubKey, { mint: STAXX_MINT }, { commitment: "confirmed" });
 
-    // Check if user has a token account
-    const userTokenAccounts = await conn.getParsedTokenAccountsByOwner(userPubKey, { mint: STAXX_MINT });
-    
+    const tx = new Transaction();
     let destAccount;
+
     if (userTokenAccounts.value.length > 0) {
       destAccount = new PublicKey(userTokenAccounts.value[0].pubkey);
     } else {
-      // Create ATA for user
+      // Create ATA for user using the correct token program
+      const userATA = await getAssociatedTokenAddress(STAXX_MINT, userPubKey, false, tokenProgramId);
       tx.add(createAssociatedTokenAccountInstruction(
         treasury.publicKey,
         userATA,
         userPubKey,
-        STAXX_MINT
+        STAXX_MINT,
+        tokenProgramId
       ));
       destAccount = userATA;
     }
 
-    // Add transfer
-    tx.add(createTransferInstruction(
+    // Use the correct token program for the transfer
+    tx.add(createTokenTransferInstruction(
       treasuryATA,
       destAccount,
       treasury.publicKey,
-      raw
+      raw,
+      tokenProgramId
     ));
 
     const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash("confirmed");
