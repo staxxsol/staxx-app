@@ -1362,27 +1362,25 @@ export default function App() {
       const msg = "STAXX withdraw\n\nAmount: " + amt + " $STAXX\nWallet: " + wallet.publicKey + "\nTimestamp: " + timestamp;
       const msgBytes = new TextEncoder().encode(msg);
       const { signature } = await provider.signMessage(msgBytes, "utf8");
-      const sigArray = new Uint8Array(signature);
-      const chars = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
-      let sigB58 = "";
-      let bytes = [...sigArray];
-      while (bytes.length) {
-        let carry = 0;
-        const newBytes = [];
-        for (const byte of bytes) {
-          carry = carry * 256 + byte;
-          if (newBytes.length || carry >= 58) {
-            newBytes.push(carry % 58);
-            carry = Math.floor(carry / 58);
+      const sigBytes = signature instanceof Uint8Array ? signature : new Uint8Array(signature);
+      // Base58 encode
+      const B58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+      function toB58(buf) {
+        const d = []; let s = "";
+        for (let i = 0; i < buf.length; i++) {
+          let carry = buf[i];
+          for (let j = 0; j < d.length; j++) {
+            carry += d[j] << 8;
+            d[j] = carry % 58;
+            carry = (carry / 58) | 0;
           }
+          while (carry > 0) { d.push(carry % 58); carry = (carry / 58) | 0; }
         }
-        sigB58 = chars[carry] + sigB58;
-        bytes = newBytes;
+        for (let i = 0; i < buf.length && buf[i] === 0; i++) s += B58[0];
+        for (let i = d.length - 1; i >= 0; i--) s += B58[d[i]];
+        return s;
       }
-      for (const byte of sigArray) {
-        if (byte === 0) sigB58 = "1" + sigB58;
-        else break;
-      }
+      const sigB58 = toB58(sigBytes);
       setWalletStatus("⏳ Sending $STAXX to your wallet...");
       const resp = await fetch("/api/claim", {
         method: "POST",
@@ -1809,27 +1807,24 @@ export default function App() {
         const msg = "STAXX claim_stake_rewards\n\nAmount: " + claimAmount + " $STAXX\nWallet: " + wallet.publicKey + "\nTimestamp: " + timestamp;
         const msgBytes = new TextEncoder().encode(msg);
         const { signature } = await provider.signMessage(msgBytes, "utf8");
-        const sigArray = new Uint8Array(signature);
-        const chars = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
-        let sigB58 = "";
-        let bytes = [...sigArray];
-        while (bytes.length) {
-          let carry = 0;
-          const newBytes = [];
-          for (const byte of bytes) {
-            carry = carry * 256 + byte;
-            if (newBytes.length || carry >= 58) {
-              newBytes.push(carry % 58);
-              carry = Math.floor(carry / 58);
+        const sigBytes = signature instanceof Uint8Array ? signature : new Uint8Array(signature);
+        const B58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+        function toB58(buf) {
+          const d = []; let s = "";
+          for (let i = 0; i < buf.length; i++) {
+            let carry = buf[i];
+            for (let j = 0; j < d.length; j++) {
+              carry += d[j] << 8;
+              d[j] = carry % 58;
+              carry = (carry / 58) | 0;
             }
+            while (carry > 0) { d.push(carry % 58); carry = (carry / 58) | 0; }
           }
-          sigB58 = chars[carry] + sigB58;
-          bytes = newBytes;
+          for (let i = 0; i < buf.length && buf[i] === 0; i++) s += B58[0];
+          for (let i = d.length - 1; i >= 0; i--) s += B58[d[i]];
+          return s;
         }
-        for (const byte of sigArray) {
-          if (byte === 0) sigB58 = "1" + sigB58;
-          else break;
-        }
+        const sigB58 = toB58(sigBytes);
         setWalletStatus("⏳ Sending $STAXX to your wallet...");
         const resp = await fetch("/api/claim", {
           method: "POST",
